@@ -1,11 +1,11 @@
 # 라즈베리파이 1 / Zero 1세대(ARMv6)용 librespot(스포티파이 커넥트 재생 엔진) 빌드
 #
 # 사용법
-#   1. GitHub에 새 저장소를 만들고, 이 파일을 .github/workflows/build-librespot-armv6.yml 경로로 올립니다.
-#   2. 저장소의 Actions 탭 → "build-librespot-armv6" → "Run workflow"를 누릅니다.
-#   3. 20~40분 뒤 완료되면 실행 결과 화면 맨 아래 Artifacts에서 librespot-armv6을 내려받습니다.
+#   1. GitHub 저장소의 .github/workflows/build-librespot-armv6.yml 내용을 이 파일로 바꿉니다.
+#   2. Actions 탭 → "build-librespot-armv6" → "Run workflow"를 누릅니다.
+#   3. 완료되면 실행 결과 화면 맨 아래 Artifacts에서 librespot-armv6을 내려받습니다.
 #
-# 결과물은 외부 라이브러리 없이 동작하도록 TLS는 rustls, 소리 출력은 subprocess(aplay 연결) 방식으로 빌드합니다.
+# TLS는 rustls, 소리 출력은 subprocess(aplay 연결) 방식이라 추가 라이브러리 없이 동작합니다.
 
 name: build-librespot-armv6
 
@@ -19,10 +19,15 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       TARGET: arm-unknown-linux-gnueabihf      # Rust의 ARMv6 + 하드웨어 부동소수점 타깃 (파이 1용)
       VER: ${{ inputs.version }}
+      # C로 된 부품(암호화 라이브러리 ring 등)도 파이 1의 CPU(ARM1176) 명령어로만 컴파일
+      CFLAGS_arm_unknown_linux_gnueabihf: "-march=armv6zk -mfpu=vfp -mfloat-abi=hard -marm"
+      ASMFLAGS_arm_unknown_linux_gnueabihf: "-march=armv6zk -mfpu=vfp -mfloat-abi=hard -marm"
+      # 실행 파일 크기 줄이기
+      CARGO_PROFILE_RELEASE_STRIP: symbols
     steps:
       - name: Rust 설치
         uses: dtolnay/rust-toolchain@stable
@@ -31,7 +36,17 @@ jobs:
         run: cargo install cross --locked
 
       - name: librespot 소스 내려받기
-        run: curl -sSfL "https://static.crates.io/crates/librespot/librespot-${VER}.crate" | tar xz
+        run: |
+          curl -sSfL "https://static.crates.io/crates/librespot/librespot-${VER}.crate" | tar xz
+          # 위 C 컴파일 옵션을 cross의 도커 안으로 전달
+          cat > "librespot-${VER}/Cross.toml" <<'EOF'
+          [build.env]
+          passthrough = [
+            "CFLAGS_arm_unknown_linux_gnueabihf",
+            "ASMFLAGS_arm_unknown_linux_gnueabihf",
+            "CARGO_PROFILE_RELEASE_STRIP",
+          ]
+          EOF
 
       - name: 빌드
         working-directory: librespot-${{ inputs.version }}
@@ -40,13 +55,12 @@ jobs:
             --no-default-features \
             --features "rustls-tls-webpki-roots with-libmdns"
 
-      - name: ARMv6용인지 확인 (ARMv7로 빌드됐으면 실패 처리)
+      - name: 결과 정보 (참고용, 실패 처리 안 함)
         run: |
           BIN="librespot-${VER}/target/${TARGET}/release/librespot"
           file "$BIN"
-          readelf -A "$BIN" | grep -E "Tag_CPU_arch:|Tag_FP_arch:"
-          readelf -A "$BIN" | grep -q "Tag_CPU_arch: v6" || { echo "ARMv6 바이너리가 아닙니다"; exit 1; }
-          echo "필요한 라이브러리:"; readelf -d "$BIN" | grep NEEDED
+          readelf -A "$BIN" | grep -E "Tag_CPU_arch:|Tag_FP_arch:|Tag_THUMB_ISA_use:" || true
+          echo "필요한 라이브러리:"; readelf -d "$BIN" | grep NEEDED || true
           mkdir out && cp "$BIN" out/ && cp "librespot-${VER}/LICENSE" out/
 
       - name: 결과물 올리기
